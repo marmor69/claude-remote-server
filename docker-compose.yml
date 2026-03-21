@@ -15,17 +15,19 @@ services:
       SETUP_MODE: ${SETUP_MODE:-true}
       SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
     volumes:
-      - ${WORKSPACE_VOLUME_NAME:-claude-workspace-data}:/home/claude/workspace
-      - ${CONFIG_VOLUME_NAME:-claude-config-data}:/home/claude/.claude
+      - claude-workspace-data:/home/claude/workspace
+      - claude-config-data:/home/claude/.claude
     healthcheck:
-      test: ["CMD-SHELL", "[ "$SETUP_MODE" = "true" ] || pgrep -af 'claude remote-control server' >/dev/null"]
+      test:
+        - CMD-SHELL
+        - >
+          if [ "$SETUP_MODE" = "true" ]; then exit 0; fi;
+          pgrep -af "claude remote-control server" >/dev/null || exit 1
       interval: ${HEALTHCHECK_INTERVAL:-30s}
       timeout: ${HEALTHCHECK_TIMEOUT:-10s}
       retries: ${HEALTHCHECK_RETRIES:-5}
       start_period: ${HEALTHCHECK_START_PERIOD:-30s}
 
 volumes:
-  ${WORKSPACE_VOLUME_NAME:-claude-workspace-data}:
-    name: ${WORKSPACE_VOLUME_NAME:-claude-workspace-data}
-  ${CONFIG_VOLUME_NAME:-claude-config-data}:
-    name: ${CONFIG_VOLUME_NAME:-claude-config-data}
+  claude-workspace-data:
+  claude-config-data:
