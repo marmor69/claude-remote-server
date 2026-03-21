@@ -33,6 +33,31 @@ Builds a small Debian-based image with Claude Code installed globally and a cust
 
 Defines the service, persistent volumes, restart policy, and setup/server environment variables.
 
+## Environment variables
+
+This project is designed so you do not need to edit `docker-compose.yml` for normal configuration changes.
+
+The Compose file reads values from a `.env` file and also passes that file into the container with `env_file`. This works well with Dokploy because Dokploy manages deployment variables through its Environment UI and writes them to a `.env` file for the Compose app.
+
+### Example `.env`
+
+```env
+CONTAINER_NAME=claude-remote
+DOCKERFILE_PATH=Dockerfile
+
+TZ=Europe/Berlin
+SETUP_MODE=true
+SPAWN_WORKTREE_SESSIONS=5
+
+WORKSPACE_VOLUME_NAME=claude-workspace-data
+CONFIG_VOLUME_NAME=claude-config-data
+
+HEALTHCHECK_INTERVAL=30s
+HEALTHCHECK_TIMEOUT=10s
+HEALTHCHECK_RETRIES=5
+HEALTHCHECK_START_PERIOD=30s
+```
+
 ## Volumes
 
 This setup uses two persistent Docker volumes:
