@@ -10,10 +10,13 @@ services:
     tty: true
     environment:
       TZ: Europe/Berlin
+      SETUP_MODE: "true"
+      SPAWN_WORKTREE_SESSIONS: "5"
     volumes:
       - claude-workspace-data:/home/claude/workspace
+      - claude-config-data:/home/claude/.claude
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -af 'claude remote-control server' >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "[ "$SETUP_MODE" = "true" ] || pgrep -af 'claude remote-control server' >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -22,3 +25,5 @@ services:
 volumes:
   claude-workspace-data:
     name: claude-workspace-data
+  claude-config-data:
+    name: claude-config-data
