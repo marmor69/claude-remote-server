@@ -1,22 +1,52 @@
 FROM node:20-slim
 
-# Install essential tools (util-linux is added for runuser)
 RUN apt-get update && apt-get install -y \
-    git \
+    bash \
+    ca-certificates \
     curl \
+    git \
     jq \
+    procps \
     python3 \
     util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# Create the dedicated user and workspace directory
-RUN useradd -m -s /bin/bash claude
-RUN mkdir -p /home/claude/workspace
+RUN useradd -m -s /bin/bash claude \
+    && mkdir -p /home/claude/workspace /home/claude/.claude
+
+RUN cat <<'EOF' > /usr/local/bin/docker-entrypoint.sh
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p /home/claude/workspace /home/claude/.claude
+chown -R claude:claude /home/claude/workspace /home/claude/.claude
+
+if [[ "${SETUP_MODE:-false}" == "true" ]]; then
+  echo
+  echo "SETUP_MODE=true"
+  echo "Open a terminal in this container and run:"
+  echo "  claude"
+  echo
+  echo "Then complete:"
+  echo "  /login"
+  echo "  /status"
+  echo
+  echo "After successful login, set SETUP_MODE=false and redeploy."
+  echo
+  exec tail -f /dev/null
+fi
+
+unset ANTHROPIC_API_KEY || true
+unset ANTHROPIC_AUTH_TOKEN || true
+
+exec runuser -u claude -- bash -lc \
+  "cd /home/claude/workspace && exec claude remote-control server --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
+EOF
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /home/claude/workspace
 
-# Start as root to chown the mounted volume, then securely step down to the claude user
-ENTRYPOINT ["/bin/bash", "-c", "chown -R claude:claude /home/claude/workspace && exec runuser -u claude -- claude remote-control server --spawn-worktree-sessions 5"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
