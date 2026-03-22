@@ -12,8 +12,11 @@ services:
       - .env
     environment:
       TZ: ${TZ:-Europe/Berlin}
-      SETUP_MODE: ${SETUP_MODE:-true}
+      SETUP_MODE: ${SETUP_MODE:-false}
       SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    ports:
+      - "${SSH_HOST_PORT:-2222}:22"
     volumes:
       - claude-workspace-data:/home/claude/workspace
       - claude-config-data:/home/claude/.claude
@@ -21,7 +24,6 @@ services:
       test:
         - CMD-SHELL
         - >
-          if [ "$SETUP_MODE" = "true" ]; then exit 0; fi;
           pgrep -af "claude remote-control server" >/dev/null || exit 1
       interval: ${HEALTHCHECK_INTERVAL:-30s}
       timeout: ${HEALTHCHECK_TIMEOUT:-10s}
@@ -30,4 +32,6 @@ services:
 
 volumes:
   claude-workspace-data:
+    name: claude-workspace-data
   claude-config-data:
+    name: claude-config-data
