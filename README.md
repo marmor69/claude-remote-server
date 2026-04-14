@@ -1,241 +1,158 @@
 # Claude Code Remote Control Server for Dokploy
 
-A Docker-based setup for running Claude Code as a headless remote-control server on a VPS with persistent storage, optional SSH access, and support for spawned worktree sessions.
+A small, Dokploy-friendly Docker setup for running
+[`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+as a headless `remote-control server` on a VPS, with persistent workspace
+and config volumes, a proper authentication pipeline, and optional SSH.
 
-This project is intended for self-hosted use with Dokploy or any Docker Compose-compatible platform.
+## Quick start (Dokploy)
 
-## Features
+1. Create a **Docker Compose** application in Dokploy and point it at this
+   repository.
+2. Generate an OAuth token on a machine that has a browser:
 
-- Headless Claude Code workspace for VPS hosting
-- OAuth-token-based setup for easier headless deployment
-- Fallback interactive `/login` flow if you prefer manual login
-- Persistent workspace volume
-- Persistent Claude config volume
-- Optional SSH access into the container
-- Remote Control server mode with spawned worktree sessions
-- Runs Claude Code as the `claude` user
+   ```bash
+   claude setup-token
+   ```
 
-## Why this setup exists
+   Copy the resulting token into Dokploy's environment UI as
+   `CLAUDE_CODE_OAUTH_TOKEN` (treat it as a secret — do not commit it).
+3. Deploy. The entrypoint logs which auth source it picked; when the
+   process is healthy you're done.
 
-Claude Code Remote Control requires Claude subscription authentication. In a headless container, the standard browser-based login flow can be awkward.
+That's the whole happy path. Everything below is only needed if you want
+SSH, the interactive-login fallback, or a specific tweak.
 
-This setup supports two ways to authenticate:
+## How authentication works
 
-1. Recommended: create an OAuth token on another machine and pass it through `CLAUDE_CODE_OAUTH_TOKEN`
-2. Fallback: start in setup mode and run `claude`, then `/login`, inside the container terminal
+Claude Code Remote Control requires **subscription** authentication, not
+an API key. The container supports two paths, in priority order:
 
-## Files
+1. **`CLAUDE_CODE_OAUTH_TOKEN` env var (recommended).** Generate once with
+   `claude setup-token` on any machine with a browser, then set the token
+   as an environment variable in Dokploy. No interactive step needed on
+   the VPS.
+2. **Interactive `/login` (fallback).** For users who can't run
+   `claude setup-token` elsewhere. Set `SETUP_MODE=true`, deploy, open a
+   container terminal, run `claude` and complete `/login` + `/status`,
+   then flip `SETUP_MODE` back to `false` and redeploy. The login is
+   persisted on the `claude-config-data` volume.
 
-### `Dockerfile`
+The entrypoint script (`scripts/entrypoint.sh`) resolves the auth source
+on every boot and prints one of these lines to the container logs:
 
-Builds a Debian-based image with Claude Code installed globally, optional SSH support, and an entrypoint that starts the Remote Control server.
+- `[entrypoint] auth source: env-var OAuth token (CLAUDE_CODE_OAUTH_TOKEN)`
+- `[entrypoint] auth source: persisted credentials in /home/claude/.claude`
+- `[entrypoint] ERROR: no Claude authentication available.` (followed by
+  instructions, then `exit 1`)
 
-### `docker-compose.yml`
+If neither source is available the container fails fast with an
+actionable error, instead of silently crash-looping — that's the core
+fix for the old "authentication does not work properly" bug.
 
-Defines the container, ports, persistent volumes, and environment-variable-driven configuration.
-
-### `.env.example`
-
-Provides the variables you can manage in Dokploy without editing the Compose file.
-
-## Volumes
-
-This setup uses two persistent Docker volumes:
-
-- `claude-workspace-data` mounted at `/home/claude/workspace`, stores your project files
-- `claude-config-data` mounted at `/home/claude/.claude`, stores Claude login data and local config
-
-Both should be persistent in Dokploy.
-
-## Recommended setup: OAuth token
-
-The easiest headless flow is to generate an OAuth token on another machine that already has browser access.
-
-On that machine, run:
-
-```bash
-claude setup-token
-```
-
-Then copy the generated token into Dokploy as the environment variable:
-
-```env
-CLAUDE_CODE_OAUTH_TOKEN=your-token-here
-```
-
-After that, deploy with:
-
-```env
-SETUP_MODE=false
-```
-
-This allows the container to start directly in server mode without needing interactive login during first boot.
-
-## Fallback setup: interactive login
-
-If you do not want to use an OAuth token, you can still log in interactively.
-
-Set:
-
-```env
-SETUP_MODE=true
-```
-
-Deploy the container, then open the Dokploy terminal and run:
-
-```bash
-whoami
-echo $HOME
-claude
-```
-
-Inside Claude Code, complete:
-
-```text
-/login
-/status
-```
-
-What to check:
-
-- `whoami` should be `claude`
-- `echo $HOME` should be `/home/claude`
-- `/status` should show Claude subscription authentication, not API-key auth
-
-After login succeeds:
-
-1. Change `SETUP_MODE` to `false`
-2. Redeploy the container
+If `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` are present in the
+environment, the entrypoint unsets them before launching the server so
+they can't override subscription auth.
 
 ## Environment variables
 
-This project is designed so you do not need to edit `docker-compose.yml` for normal configuration changes.
+| Variable                    | Default          | Purpose                                                              |
+|-----------------------------|------------------|----------------------------------------------------------------------|
+| `CLAUDE_CODE_OAUTH_TOKEN`   | *(empty)*        | Primary auth. Generate with `claude setup-token`.                    |
+| `SETUP_MODE`                | `false`          | `true` = don't start the server, wait for manual `/login`.           |
+| `SPAWN_WORKTREE_SESSIONS`   | `5`              | Passed straight to `--spawn-worktree-sessions`.                      |
+| `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
+| `SSH_HOST_PORT`             | `2222`           | Host port mapped to container port 22.                               |
+| `CONTAINER_NAME`            | `claude-remote`  | Compose container name.                                              |
+| `DOCKERFILE_PATH`           | `Dockerfile`     | Override when forking.                                               |
+| `TZ`                        | `Europe/Berlin`  | Container timezone.                                                  |
+| `HEALTHCHECK_INTERVAL`      | `30s`            | Compose healthcheck interval.                                        |
+| `HEALTHCHECK_TIMEOUT`       | `10s`            | Compose healthcheck timeout.                                         |
+| `HEALTHCHECK_RETRIES`       | `5`              | Compose healthcheck retries.                                         |
+| `HEALTHCHECK_START_PERIOD`  | `30s`            | Compose healthcheck grace period.                                    |
 
-Use Dokploy's environment UI or a `.env` file to manage values such as:
+See `.env.example` for the same list in copy-pasteable form.
 
-```env
-CONTAINER_NAME=claude-remote
-DOCKERFILE_PATH=Dockerfile
+## Volumes
 
-TZ=Europe/Berlin
-SETUP_MODE=false
-SPAWN_WORKTREE_SESSIONS=5
+Two named volumes, both must stay persistent in Dokploy:
 
-SSH_HOST_PORT=2222
-CLAUDE_CODE_OAUTH_TOKEN=
+- `claude-workspace-data` → `/home/claude/workspace` (your project files)
+- `claude-config-data` → `/home/claude/.claude` (Claude login data, config)
 
-HEALTHCHECK_INTERVAL=30s
-HEALTHCHECK_TIMEOUT=10s
-HEALTHCHECK_RETRIES=5
-HEALTHCHECK_START_PERIOD=30s
-```
+The entrypoint runs `chown -R claude:claude` on both on every boot so a
+freshly-mounted volume can never be root-owned in a way that silently
+breaks login persistence.
 
-## Example `docker-compose.yml`
+## SSH (optional)
 
-```yaml
-services:
-  claude-remote:
-    build:
-      context: .
-      dockerfile: ${DOCKERFILE_PATH:-Dockerfile}
-    container_name: ${CONTAINER_NAME:-claude-remote}
-    restart: unless-stopped
-    init: true
-    stdin_open: true
-    tty: true
-    env_file:
-      - .env
-    environment:
-      TZ: ${TZ:-Europe/Berlin}
-      SETUP_MODE: ${SETUP_MODE:-false}
-      SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
-      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-    ports:
-      - "${SSH_HOST_PORT:-2222}:22"
-    volumes:
-      - claude-workspace-data:/home/claude/workspace
-      - claude-config-data:/home/claude/.claude
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >
-          pgrep -af "claude remote-control server" >/dev/null || exit 1
-      interval: ${HEALTHCHECK_INTERVAL:-30s}
-      timeout: ${HEALTHCHECK_TIMEOUT:-10s}
-      retries: ${HEALTHCHECK_RETRIES:-5}
-      start_period: ${HEALTHCHECK_START_PERIOD:-30s}
+SSH is **off by default**. The `openssh-server` package is installed in
+the image, but `sshd` only starts when `ENABLE_SSH=true` — the entrypoint
+decides at runtime.
 
-volumes:
-  claude-workspace-data:
-    name: claude-workspace-data
-  claude-config-data:
-    name: claude-config-data
-```
+To enable it:
 
-## SSH access
+1. Drop a public key into the `claude-config-data` volume's
+   `authorized_keys` (for example by using `SETUP_MODE=true` to get a
+   shell first), or bake one in via a volume mount.
+2. Set `ENABLE_SSH=true`.
+3. Redeploy. The entrypoint log will show `sshd started (port 22 inside
+   container)`.
+4. Connect with:
 
-If SSH is enabled in the image and you publish port 22 through Compose, you can connect to the container with an SSH client.
+   ```bash
+   ssh -p 2222 claude@your.vps.example
+   ```
 
-Example:
-
-```bash
-ssh -p 2222 claude@ssh.domain.com
-```
-
-For Dokploy, the practical approach is to point an `A` record like `ssh.domain.com` to your VPS IP and connect to the published TCP port.
-
-## Dokploy notes
-
-For Dokploy, create a Docker Compose application and point it at this repository.
-
-Important points:
-
-- Keep both named volumes persistent
-- Prefer `CLAUDE_CODE_OAUTH_TOKEN` for headless setup
-- Use `SETUP_MODE=true` only when doing manual login
-- Complete fallback login from the Dokploy terminal, not from the log viewer
-- After manual login, switch setup mode off and redeploy
+Password auth is disabled; only public-key auth for the `claude` user is
+allowed. The host port is published regardless of `ENABLE_SSH` so you can
+toggle SSH from the Dokploy env UI without editing compose — when it's
+off, nothing is listening on the inside of the container.
 
 ## Troubleshooting
 
+### `[entrypoint] ERROR: no Claude authentication available.`
+
+Either set `CLAUDE_CODE_OAUTH_TOKEN` (recommended) or use the interactive
+fallback with `SETUP_MODE=true`. See "How authentication works" above.
+
 ### Login does not persist after redeploy
 
-Check these:
-
-- `/home/claude/.claude` is mounted to a persistent named volume
-- The volume names are explicitly set in Compose with `name:`
-- You are logging in as user `claude`, not `root`
-- You are not accidentally recreating or renaming the project volumes
-
-### "You must be logged in to use Remote Control"
-
-Possible causes:
-
-- No `CLAUDE_CODE_OAUTH_TOKEN` was provided
-- Interactive login was not completed
-- Login was saved under the wrong user home directory
-- API-key auth is taking precedence over subscription auth
+- Make sure `claude-config-data` is a persistent named volume in Dokploy
+  (don't delete it between deploys).
+- Log in as the `claude` user, not `root` — `whoami` inside the
+  container should return `claude`.
+- Don't rename the volume; that creates a new empty volume and orphans
+  your previous login.
 
 ### API-key auth interferes with Remote Control
 
-Do not set these unless you intentionally want non-subscription auth:
+The entrypoint already unsets `ANTHROPIC_API_KEY` and
+`ANTHROPIC_AUTH_TOKEN` on boot, but remove them from your Dokploy env
+anyway if you aren't using them — the less moving parts, the better.
+Remote Control requires subscription auth, and an API key in the same
+process will silently win.
 
-- `ANTHROPIC_API_KEY`
-- `ANTHROPIC_AUTH_TOKEN`
+### Container is "running" but something feels off
 
-If those are present, remove them and redeploy.
+Check the logs for the `[entrypoint]` lines described in "How
+authentication works". They tell you exactly which auth source was used
+and whether sshd started.
 
 ## Security notes
 
-This image is designed for self-hosting. Review the Dockerfile before deployment and only mount paths you trust.
-
-Treat `CLAUDE_CODE_OAUTH_TOKEN` as a secret. Store it in Dokploy environment variables, not in a committed `.env` file.
+- Treat `CLAUDE_CODE_OAUTH_TOKEN` as a secret. Store it in Dokploy's env
+  UI, never commit it.
+- Review the Dockerfile before deployment; only mount paths you trust.
+- The `claude` user has passwordless `sudo` inside the container so the
+  entrypoint can repair volume ownership. If that matters for your
+  threat model, audit before deploying.
 
 ## Disclaimer
 
-This project is an independent community setup and is not affiliated with, endorsed by, or maintained by Anthropic.
-
-Claude Code, Claude, and related product names belong to their respective owners.
+Independent community setup. Not affiliated with, endorsed by, or
+maintained by Anthropic. Claude Code, Claude, and related product names
+belong to their respective owners.
 
 ## License
 

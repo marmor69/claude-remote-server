@@ -6,16 +6,21 @@ services:
     container_name: ${CONTAINER_NAME:-claude-remote}
     restart: unless-stopped
     init: true
-    stdin_open: true
-    tty: true
     env_file:
-      - .env
+      # Optional: Dokploy injects env vars through its UI, local users
+      # can create a .env file from .env.example.
+      - path: .env
+        required: false
     environment:
       TZ: ${TZ:-Europe/Berlin}
       SETUP_MODE: ${SETUP_MODE:-false}
+      ENABLE_SSH: ${ENABLE_SSH:-false}
       SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     ports:
+      # Published unconditionally so Dokploy users can toggle ENABLE_SSH
+      # via the env UI without editing compose. Nothing listens inside the
+      # container when ENABLE_SSH=false.
       - "${SSH_HOST_PORT:-2222}:22"
     volumes:
       - claude-workspace-data:/home/claude/workspace
@@ -23,8 +28,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - >
-          pgrep -af "claude remote-control server" >/dev/null || exit 1
+        - pgrep -f "claude remote-control server" >/dev/null || exit 1
       interval: ${HEALTHCHECK_INTERVAL:-30s}
       timeout: ${HEALTHCHECK_TIMEOUT:-10s}
       retries: ${HEALTHCHECK_RETRIES:-5}
