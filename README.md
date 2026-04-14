@@ -17,7 +17,12 @@ and config volumes, a proper authentication pipeline, and optional SSH.
 
    Copy the resulting token into Dokploy's environment UI as
    `CLAUDE_CODE_OAUTH_TOKEN` (treat it as a secret — do not commit it).
-3. Deploy. The entrypoint logs which auth source it picked; when the
+3. On that same machine, open `~/.claude.json` and copy the three values
+   inside the `oauthAccount` object into Dokploy as
+   `CLAUDE_ACCOUNT_UUID`, `CLAUDE_EMAIL`, and `CLAUDE_ORGANIZATION_UUID`.
+   The entrypoint uses them to rebuild `~/.claude.json` inside the
+   container on every boot.
+4. Deploy. The entrypoint logs which auth source it picked; when the
    process is healthy you're done.
 
 That's the whole happy path. Everything below is only needed if you want
@@ -32,6 +37,26 @@ an API key. The container supports two paths, in priority order:
    `claude setup-token` on any machine with a browser, then set the token
    as an environment variable in Dokploy. No interactive step needed on
    the VPS.
+
+   The token alone is not enough, though: `claude-code` also reads
+   `~/.claude.json` for onboarding state and account identity. The
+   entrypoint rebuilds that file on every boot from these three
+   variables (all three required when `CLAUDE_CODE_OAUTH_TOKEN` is set):
+
+   - `CLAUDE_ACCOUNT_UUID`
+   - `CLAUDE_EMAIL`
+   - `CLAUDE_ORGANIZATION_UUID`
+
+   Find the values on any machine where `claude` is already logged in,
+   inside `~/.claude.json` under the `oauthAccount` object:
+
+   ```bash
+   jq '.oauthAccount' ~/.claude.json
+   ```
+
+   Optionally override `CLAUDE_ONBOARDING_VERSION` (defaults to `2.1.29`)
+   if a future `claude-code` release requires a newer value.
+
 2. **Interactive `/login` (fallback).** For users who can't run
    `claude setup-token` elsewhere. Set `SETUP_MODE=true`, deploy, open a
    container terminal, run `claude` and complete `/login` + `/status`,
@@ -59,6 +84,10 @@ they can't override subscription auth.
 | Variable                    | Default          | Purpose                                                              |
 |-----------------------------|------------------|----------------------------------------------------------------------|
 | `CLAUDE_CODE_OAUTH_TOKEN`   | *(empty)*        | Primary auth. Generate with `claude setup-token`.                    |
+| `CLAUDE_ACCOUNT_UUID`       | *(empty)*        | Account UUID from `~/.claude.json` → `oauthAccount.accountUuid`.     |
+| `CLAUDE_EMAIL`              | *(empty)*        | Email from `~/.claude.json` → `oauthAccount.emailAddress`.           |
+| `CLAUDE_ORGANIZATION_UUID`  | *(empty)*        | Org UUID from `~/.claude.json` → `oauthAccount.organizationUuid`.    |
+| `CLAUDE_ONBOARDING_VERSION` | `2.1.29`         | Value written to `lastOnboardingVersion` in `~/.claude.json`.        |
 | `SETUP_MODE`                | `false`          | `true` = don't start the server, wait for manual `/login`.           |
 | `SPAWN_WORKTREE_SESSIONS`   | `5`              | Passed straight to `--spawn-worktree-sessions`.                      |
 | `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
@@ -115,6 +144,13 @@ off, nothing is listening on the inside of the container.
 
 Either set `CLAUDE_CODE_OAUTH_TOKEN` (recommended) or use the interactive
 fallback with `SETUP_MODE=true`. See "How authentication works" above.
+
+### `[entrypoint] ERROR: CLAUDE_CODE_OAUTH_TOKEN is set but onboarding env vars are missing.`
+
+You set the token but forgot one of `CLAUDE_ACCOUNT_UUID`,
+`CLAUDE_EMAIL`, or `CLAUDE_ORGANIZATION_UUID`. Grab them from
+`~/.claude.json` on a machine where `claude` is already logged in (see
+"How authentication works") and set all three in Dokploy.
 
 ### Login does not persist after redeploy
 
