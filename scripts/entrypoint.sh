@@ -126,6 +126,58 @@ fi
 log "auth source: $auth_source"
 
 # ---------------------------------------------------------------------------
+# 5b. Materialise ~/.claude.json from onboarding env vars
+# ---------------------------------------------------------------------------
+# The OAuth token alone is not enough: claude-code also reads
+# /home/claude/.claude.json to confirm onboarding is complete and to know
+# which account / organization the token belongs to. That file lives at
+# $HOME, not inside the $HOME/.claude/ config volume, so it would be lost
+# on every container rebuild — we regenerate it deterministically from
+# env vars on every boot instead.
+ONBOARDING_JSON="$CLAUDE_HOME/.claude.json"
+
+if [[ -n "${CLAUDE_ACCOUNT_UUID:-}" \
+   && -n "${CLAUDE_EMAIL:-}" \
+   && -n "${CLAUDE_ORGANIZATION_UUID:-}" ]]; then
+  onboarding_version="${CLAUDE_ONBOARDING_VERSION:-2.1.29}"
+  jq -n \
+    --arg ver "$onboarding_version" \
+    --arg uuid "$CLAUDE_ACCOUNT_UUID" \
+    --arg email "$CLAUDE_EMAIL" \
+    --arg org "$CLAUDE_ORGANIZATION_UUID" \
+    '{
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: $ver,
+      oauthAccount: {
+        accountUuid: $uuid,
+        emailAddress: $email,
+        organizationUuid: $org
+      }
+    }' > "$ONBOARDING_JSON"
+  chmod 600 "$ONBOARDING_JSON"
+  log "wrote $ONBOARDING_JSON (onboarding v$onboarding_version)"
+elif [[ "$auth_source" == env-var* ]]; then
+  err "CLAUDE_CODE_OAUTH_TOKEN is set but onboarding env vars are missing."
+  cat >&2 <<'MSG'
+
+The OAuth token path requires all of:
+
+  CLAUDE_ACCOUNT_UUID       (your Claude account UUID)
+  CLAUDE_EMAIL              (the email on your Claude account)
+  CLAUDE_ORGANIZATION_UUID  (your Claude organization UUID)
+
+Optional:
+  CLAUDE_ONBOARDING_VERSION (defaults to 2.1.29)
+
+Set them in your Dokploy env and redeploy.
+
+MSG
+  exit 1
+else
+  log "onboarding env vars not set; leaving $ONBOARDING_JSON untouched"
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Launch the Remote Control server
 # ---------------------------------------------------------------------------
 log "starting: claude remote-control server --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
