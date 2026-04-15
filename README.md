@@ -2,12 +2,12 @@
 
 A small, Dokploy-friendly Docker setup for running
 [`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-as a headless `remote-control server` on a VPS, with the entire `$HOME`
+as a headless remote-control server on a VPS, with the entire `$HOME`
 directory persisted across redeploys and optional SSH.
 
 ## How authentication works
 
-`claude remote-control server` only accepts **subscription** auth obtained
+`claude remote-control` only accepts **subscription** auth obtained
 through the interactive `/login` flow. Long-lived OAuth tokens
 (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) are **not** supported
 for Remote Control — the entrypoint will actually unset the variable if it
@@ -66,22 +66,57 @@ work without any manual steps.
 
    and redeploy. On boot the entrypoint verifies that
    `~/.claude/.credentials.json` is present on the home volume and execs
-   `claude remote-control server`. You should see this in the logs:
+   `claude remote-control`. You should see this in the logs:
 
    ```text
    [entrypoint] persisted credentials: found in /home/claude/.claude
-   [entrypoint] starting: claude remote-control server --spawn-worktree-sessions 5
+   [entrypoint] starting: claude remote-control --spawn worktree
    ```
 
 That's it. Subsequent redeploys reuse the persisted login, so you don't
 have to repeat any of this unless Claude Code forces a re-auth.
 
+## Spawn mode and the workspace git repo
+
+The default spawn mode is `worktree`: `claude remote-control` acts as
+an orchestrator that creates a separate git worktree for every
+on-demand session, so simultaneous sessions don't step on each other
+when editing the same files.
+
+Worktree mode **requires `/home/claude/workspace` to be a git
+repository**. During the first-time setup (step 3, while
+`SETUP_MODE=true`) clone or `git init` a repo there, for example:
+
+```bash
+cd ~/workspace
+git clone https://github.com/you/your-project.git .
+# or:
+git init
+```
+
+If you'd rather not use worktree mode, set `SPAWN_MODE=same-dir`
+(all sessions share one working directory) or `SPAWN_MODE=session`
+(single-session mode, rejects additional connections). See the env
+var table below.
+
 ## Environment variables
+
+### Remote-control server flags
+
+| Variable                                    | Default    | Maps to                                        |
+|---------------------------------------------|------------|------------------------------------------------|
+| `SPAWN_MODE`                                | `worktree` | `--spawn <mode>`. Valid: `worktree`, `same-dir`, `session`. |
+| `CAPACITY`                                  | *(empty)*  | `--capacity N`. Claude's built-in default is 32. Not compatible with `session`. |
+| `SESSION_NAME`                              | *(empty)*  | `--name`. Custom session title in claude.ai/code. |
+| `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` | *(empty)*  | Prefix for auto-generated session names (read natively by claude-code). Defaults to container hostname when empty. |
+| `VERBOSE`                                   | `false`    | `--verbose`. Detailed connection / session logs. |
+| `SANDBOX`                                   | `false`    | `--sandbox`. Filesystem + network isolation for spawned sessions. |
+
+### Container + setup
 
 | Variable                    | Default          | Purpose                                                              |
 |-----------------------------|------------------|----------------------------------------------------------------------|
 | `SETUP_MODE`                | `false`          | `true` = skip the server, wait for manual `/login`.                  |
-| `SPAWN_WORKTREE_SESSIONS`   | `5`              | Passed straight to `--spawn-worktree-sessions`.                      |
 | `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
 | `SSH_HOST_PORT`             | `2222`           | Host port mapped to container port 22.                               |
 | `CONTAINER_NAME`            | `claude-remote`  | Compose container name.                                              |
@@ -141,9 +176,15 @@ off, nothing is listening on the inside of the container.
 You haven't completed the first-time setup yet. Follow "First-time setup"
 from step 2.
 
+### Server exits with a git / worktree error
+
+`SPAWN_MODE=worktree` (the default) needs `/home/claude/workspace` to
+be a git repository. Either `git init` / clone something in there
+during `SETUP_MODE`, or switch to `SPAWN_MODE=same-dir`.
+
 ### `[entrypoint] WARNING: CLAUDE_CODE_OAUTH_TOKEN is set`
 
-You set a long-lived OAuth token, but `remote-control server` doesn't
+You set a long-lived OAuth token, but `claude remote-control` doesn't
 accept them. The entrypoint unsets the variable automatically; remove it
 from your Dokploy env to silence the warning and use the `SETUP_MODE`
 flow instead.

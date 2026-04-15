@@ -4,7 +4,7 @@
 #
 # Remote Control requires subscription auth obtained via the interactive
 # `/login` flow. Long-lived OAuth tokens (CLAUDE_CODE_OAUTH_TOKEN) are
-# NOT supported by `claude remote-control server`, so the only auth path
+# NOT supported by `claude remote-control`, so the only auth path
 # is:
 #
 #   1. Deploy with SETUP_MODE=true.
@@ -23,7 +23,7 @@
 #   3. Optionally start sshd when ENABLE_SSH=true.
 #   4. If SETUP_MODE=true, print login instructions and sleep forever.
 #   5. Verify persisted credentials exist on the home volume.
-#   6. Exec `claude remote-control server`.
+#   6. Exec `claude remote-control`.
 
 set -euo pipefail
 
@@ -138,6 +138,29 @@ log "persisted credentials: found in $CONFIG_DIR"
 # ---------------------------------------------------------------------------
 # 6. Launch the Remote Control server
 # ---------------------------------------------------------------------------
-log "starting: claude remote-control server --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
-exec claude remote-control server \
-  --spawn-worktree-sessions "${SPAWN_WORKTREE_SESSIONS:-5}"
+# Build the argv from env vars. Defaults to worktree spawn mode because
+# that's the point of this project (spawn on-demand sessions per
+# worktree). Worktree mode requires $WORKSPACE_DIR to be a git repo —
+# clone or `git init` one in there during SETUP_MODE.
+args=(remote-control --spawn "${SPAWN_MODE:-worktree}")
+
+if [[ -n "${CAPACITY:-}" ]]; then
+  args+=(--capacity "$CAPACITY")
+fi
+
+if [[ -n "${SESSION_NAME:-}" ]]; then
+  args+=(--name "$SESSION_NAME")
+fi
+
+if [[ "${VERBOSE:-false}" == "true" ]]; then
+  args+=(--verbose)
+fi
+
+# Sandboxing is off by default in claude-code; only pass the flag when
+# the user explicitly opts in.
+if [[ "${SANDBOX:-false}" == "true" ]]; then
+  args+=(--sandbox)
+fi
+
+log "starting: claude ${args[*]}"
+exec claude "${args[@]}"
