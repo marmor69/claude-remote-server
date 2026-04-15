@@ -25,7 +25,9 @@
 #   5. Verify persisted credentials exist on the home volume.
 #   6. Pre-accept the one-time Remote Control consent dialog so the server
 #      starts headless (no stdin available in a container).
-#   7. Exec `claude remote-control`.
+#   7. Delete stale bridge environments left over from previous runs that
+#      were force-killed before graceful shutdown could deregister them.
+#   8. Exec `claude remote-control`.
 
 set -euo pipefail
 
@@ -162,7 +164,73 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Launch the Remote Control server
+# 7. Clean up stale bridge environments from previous runs
+# ---------------------------------------------------------------------------
+# `claude remote-control` registers a fresh environment every time it
+# starts. On graceful SIGTERM it calls DELETE /v1/environments/bridge/<id>
+# and the entry disappears from claude.ai/code. But if the container was
+# force-killed (docker stop --time too short, SIGKILL, OOM, crash) the
+# environment is left dangling and shows up as a stale session forever.
+#
+# There is no CLI flag to "resume" or reuse an environment ID, so the
+# cleanest approach is to list all bridge environments tied to this
+# machine name (the container hostname) and delete them ourselves right
+# before launching a fresh one. Best-effort: swallow every error, because
+# a failure here must not block startup.
+cleanup_stale_bridge_environments() {
+  local token org machine response ids id count=0
+  token="$(jq -r '.claudeAiOauth.accessToken // empty' "$CONFIG_DIR/.credentials.json" 2>/dev/null || true)"
+  org="$(jq -r '.oauthAccount.organizationUuid // empty' "$CLAUDE_JSON" 2>/dev/null || true)"
+  machine="$(hostname)"
+
+  if [[ -z "$token" || -z "$org" ]]; then
+    log "cleanup: skipping (no access token or org UUID available)"
+    return 0
+  fi
+
+  # List all environments. The ListEnvironments endpoint is paginated but
+  # 100 is plenty for one machine's history of bridge sessions.
+  response="$(curl -sS --max-time 10 \
+    -H "Authorization: Bearer $token" \
+    -H "x-organization-uuid: $org" \
+    -H "anthropic-beta: ccr-byoc-2025-07-29" \
+    "https://api.anthropic.com/v1/environments?limit=100" 2>/dev/null || true)"
+
+  if [[ -z "$response" ]]; then
+    log "cleanup: skipping (environments list request failed)"
+    return 0
+  fi
+
+  # Match kind=bridge AND machine_name=current hostname. Tolerate field
+  # name variations in case the API shape shifts slightly.
+  ids="$(printf '%s' "$response" | jq -r --arg name "$machine" '
+    (.data // .environments // [])[]?
+    | select((.kind // "") == "bridge")
+    | select((.machine_name // .name // "") == $name)
+    | (.environment_id // .id // empty)
+  ' 2>/dev/null || true)"
+
+  for id in $ids; do
+    if curl -sS --max-time 10 -o /dev/null -X DELETE \
+        -H "Authorization: Bearer $token" \
+        -H "x-organization-uuid: $org" \
+        -H "anthropic-beta: ccr-byoc-2025-07-29" \
+        "https://api.anthropic.com/v1/environments/bridge/$id" 2>/dev/null; then
+      count=$((count + 1))
+    fi
+  done
+
+  if [[ $count -gt 0 ]]; then
+    log "cleanup: deleted $count stale bridge environment(s) for machine '$machine'"
+  else
+    log "cleanup: no stale bridge environments found for machine '$machine'"
+  fi
+}
+
+cleanup_stale_bridge_environments || true
+
+# ---------------------------------------------------------------------------
+# 8. Launch the Remote Control server
 # ---------------------------------------------------------------------------
 # Build the argv from env vars. Defaults to worktree spawn mode because
 # that's the point of this project (spawn on-demand sessions per

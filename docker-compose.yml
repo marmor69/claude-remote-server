@@ -4,8 +4,14 @@ services:
       context: .
       dockerfile: ${DOCKERFILE_PATH:-Dockerfile}
     container_name: ${CONTAINER_NAME:-claude-remote}
+    hostname: ${CONTAINER_HOSTNAME:-claude-remote-server}
     restart: unless-stopped
     init: true
+    # Graceful shutdown needs time: `claude remote-control` archives active
+    # sessions and deregisters the environment before exiting. If it doesn't
+    # finish in time Docker sends SIGKILL and the environment becomes a
+    # stale entry in claude.ai/code.
+    stop_grace_period: ${STOP_GRACE_PERIOD:-60s}
     env_file:
       # Optional: Dokploy injects env vars through its UI, local users
       # can create a .env file from .env.example.

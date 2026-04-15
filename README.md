@@ -119,9 +119,11 @@ var table below.
 | `SETUP_MODE`                | `false`          | `true` = skip the server, wait for manual `/login`.                  |
 | `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
 | `SSH_HOST_PORT`             | `2222`           | Host port mapped to container port 22.                               |
-| `CONTAINER_NAME`            | `claude-remote`  | Compose container name.                                              |
-| `DOCKERFILE_PATH`           | `Dockerfile`     | Override when forking.                                               |
-| `TZ`                        | `Europe/Berlin`  | Container timezone.                                                  |
+| `CONTAINER_NAME`            | `claude-remote`       | Compose container name.                                         |
+| `CONTAINER_HOSTNAME`        | `claude-remote-server`| Container hostname. Becomes the `machine_name` shown next to each environment in claude.ai/code and the default session-name prefix. Keep it stable so the dashboard entry has a consistent name across redeploys. |
+| `STOP_GRACE_PERIOD`         | `60s`                 | How long Docker waits for `claude remote-control` to archive sessions and deregister its environment on SIGTERM. Too short = SIGKILL mid-cleanup and stale environments in claude.ai/code. |
+| `DOCKERFILE_PATH`           | `Dockerfile`          | Override when forking.                                          |
+| `TZ`                        | `Europe/Berlin`       | Container timezone.                                             |
 | `HEALTHCHECK_INTERVAL`      | `30s`            | Compose healthcheck interval.                                        |
 | `HEALTHCHECK_TIMEOUT`       | `10s`            | Compose healthcheck timeout.                                         |
 | `HEALTHCHECK_RETRIES`       | `5`              | Compose healthcheck retries.                                         |
@@ -188,6 +190,28 @@ You set a long-lived OAuth token, but `claude remote-control` doesn't
 accept them. The entrypoint unsets the variable automatically; remove it
 from your Dokploy env to silence the warning and use the `SETUP_MODE`
 flow instead.
+
+### Stale / duplicate machine entries in claude.ai/code after redeploy
+
+Every time `claude remote-control` starts it registers a brand-new
+"bridge environment" with Anthropic's backend. On a graceful SIGTERM it
+deregisters itself again, but if the container is force-killed (SIGKILL,
+OOM, crash, or a too-short Docker `stop_grace_period`) the old entry is
+left dangling and shows up forever in the dashboard.
+
+There's no CLI flag to reuse or resume a previous environment, so the
+entrypoint takes the pragmatic route: right before launching the server
+it lists every bridge environment registered under the current
+`machine_name` (= container hostname) and deletes them. Combined with a
+stable `CONTAINER_HOSTNAME` and a generous `STOP_GRACE_PERIOD` (60s by
+default) the dashboard ends up with exactly one entry per redeploy
+instead of a growing pile of ghosts.
+
+If you still see duplicates after a redeploy, check the entrypoint log
+for `cleanup: deleted N stale bridge environment(s)` — if that line is
+missing, either credentials aren't available yet (first boot before
+`/login`) or the API call failed; the cleanup is best-effort and never
+blocks startup.
 
 ### Login does not persist after redeploy
 
