@@ -138,6 +138,29 @@ log "persisted credentials: found in $CONFIG_DIR"
 # ---------------------------------------------------------------------------
 # 6. Launch the Remote Control server
 # ---------------------------------------------------------------------------
-log "starting: claude remote-control --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
-exec claude remote-control \
-  --spawn-worktree-sessions "${SPAWN_WORKTREE_SESSIONS:-5}"
+# Build the argv from env vars. Defaults to worktree spawn mode because
+# that's the point of this project (spawn on-demand sessions per
+# worktree). Worktree mode requires $WORKSPACE_DIR to be a git repo —
+# clone or `git init` one in there during SETUP_MODE.
+args=(remote-control --spawn "${SPAWN_MODE:-worktree}")
+
+if [[ -n "${CAPACITY:-}" ]]; then
+  args+=(--capacity "$CAPACITY")
+fi
+
+if [[ -n "${SESSION_NAME:-}" ]]; then
+  args+=(--name "$SESSION_NAME")
+fi
+
+if [[ "${VERBOSE:-false}" == "true" ]]; then
+  args+=(--verbose)
+fi
+
+# Sandboxing is off by default in claude-code; only pass the flag when
+# the user explicitly opts in.
+if [[ "${SANDBOX:-false}" == "true" ]]; then
+  args+=(--sandbox)
+fi
+
+log "starting: claude ${args[*]}"
+exec claude "${args[@]}"

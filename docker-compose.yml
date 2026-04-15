@@ -15,7 +15,14 @@ services:
       TZ: ${TZ:-Europe/Berlin}
       SETUP_MODE: ${SETUP_MODE:-false}
       ENABLE_SSH: ${ENABLE_SSH:-false}
-      SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
+      # Maps to `claude remote-control` flags. See README for details.
+      SPAWN_MODE: ${SPAWN_MODE:-worktree}
+      CAPACITY: ${CAPACITY:-}
+      SESSION_NAME: ${SESSION_NAME:-}
+      VERBOSE: ${VERBOSE:-false}
+      SANDBOX: ${SANDBOX:-false}
+      # Read natively by claude-code; affects auto-generated session names.
+      CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX: ${CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX:-}
     ports:
       # Published unconditionally so Dokploy users can toggle ENABLE_SSH
       # via the env UI without editing compose. Nothing listens inside the
