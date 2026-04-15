@@ -2,17 +2,33 @@
 #
 # docker-entrypoint.sh — boot sequence for claude-remote-server.
 #
+# Remote Control requires subscription auth obtained via the interactive
+# `/login` flow. Long-lived OAuth tokens (CLAUDE_CODE_OAUTH_TOKEN) are
+# NOT supported by `claude remote-control server`, so the only way to
+# authenticate is:
+#
+#   1. Deploy once with SETUP_MODE=true, exec in, run `claude` and
+#      complete `/login` + `/status`. This writes short-lived
+#      credentials to /home/claude/.claude/.credentials.json (persistent
+#      on the config volume) and onboarding state to
+#      /home/claude/.claude.json (NOT in the volume).
+#
+#   2. Copy the three identity fields from ~/.claude.json into Dokploy
+#      as CLAUDE_ACCOUNT_UUID / CLAUDE_EMAIL / CLAUDE_ORGANIZATION_UUID.
+#      On every subsequent boot the entrypoint regenerates ~/.claude.json
+#      from those vars, so the redeploy doesn't lose onboarding state.
+#
+#   3. Flip SETUP_MODE=false and redeploy.
+#
 # Phases, in order:
-#   1. Fix ownership of mounted volumes (fresh Docker volumes can come up
-#      root-owned, which breaks the non-root `claude` user).
+#   1. Fix ownership of mounted volumes (fresh Docker volumes can come
+#      up root-owned, which breaks the non-root `claude` user).
 #   2. Strip any API-key env vars that would override subscription auth.
 #   3. Optionally start sshd when ENABLE_SSH=true.
-#   4. If SETUP_MODE=true, print login instructions and sleep so the
-#      operator can `docker exec` in and run `claude` / `/login` / `/status`.
-#   5. Resolve which auth source will be used (OAuth env-var token,
-#      persisted credentials on the config volume, or fail fast with an
-#      actionable error).
-#   6. Exec `claude remote-control server`.
+#   4. If SETUP_MODE=true, print login instructions and sleep forever.
+#   5. Verify persisted credentials exist on the config volume.
+#   6. Materialise ~/.claude.json from the onboarding env vars.
+#   7. Exec `claude remote-control server`.
 
 set -euo pipefail
 
@@ -23,6 +39,7 @@ CLAUDE_HOME="/home/claude"
 WORKSPACE_DIR="${CLAUDE_HOME}/workspace"
 CONFIG_DIR="${CLAUDE_HOME}/.claude"
 SSH_DIR="${CLAUDE_HOME}/.ssh"
+ONBOARDING_JSON="${CLAUDE_HOME}/.claude.json"
 
 # ---------------------------------------------------------------------------
 # 1. Fix volume ownership
@@ -47,6 +64,15 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
   log "unsetting ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (subscription auth only)"
 fi
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN || true
+
+# Long-lived OAuth tokens are not supported for `claude remote-control
+# server`. Warn loudly if one leaks in via env, then clear it so it can't
+# confuse the subscription-auth flow below.
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  log "WARNING: CLAUDE_CODE_OAUTH_TOKEN is set, but remote-control does not"
+  log "         support long-lived tokens. Unsetting and using SETUP_MODE flow."
+  unset CLAUDE_CODE_OAUTH_TOKEN
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Optional sshd
@@ -80,62 +106,61 @@ if [[ "${SETUP_MODE:-false}" == "true" ]]; then
 
  Expected in /status: Claude subscription auth, NOT API key.
 
- When /status looks good:
-   1. Set SETUP_MODE=false
-   2. Redeploy (the named volume keeps your login)
+ When /status looks good, grab the three identity values:
+
+     jq '.oauthAccount' ~/.claude.json
+
+ and set them in Dokploy as:
+
+     CLAUDE_ACCOUNT_UUID
+     CLAUDE_EMAIL
+     CLAUDE_ORGANIZATION_UUID
+
+ Then set SETUP_MODE=false and redeploy.
 ============================================================
 MSG
   exec sleep infinity
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Resolve auth source
+# 5. Verify persisted credentials
 # ---------------------------------------------------------------------------
-# Priority:
-#   a) CLAUDE_CODE_OAUTH_TOKEN env var — preferred headless path.
-#   b) Persisted credentials file on the config volume — left behind by a
-#      prior SETUP_MODE login.
-#   c) Nothing → fail fast with an actionable error, so Dokploy shows a
-#      real error instead of a silent crash-loop.
-auth_source=""
-
-if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-  auth_source="env-var OAuth token (CLAUDE_CODE_OAUTH_TOKEN)"
-elif [[ -f "$CONFIG_DIR/.credentials.json" || -f "$CONFIG_DIR/credentials.json" ]]; then
-  auth_source="persisted credentials in $CONFIG_DIR"
-fi
-
-if [[ -z "$auth_source" ]]; then
-  err "no Claude authentication available."
+# `/login` stores short-lived subscription credentials here; the config
+# volume keeps them across redeploys. If they're missing, the user hasn't
+# completed the SETUP_MODE flow yet.
+if [[ ! -f "$CONFIG_DIR/.credentials.json" && ! -f "$CONFIG_DIR/credentials.json" ]]; then
+  err "no persisted Claude credentials found in $CONFIG_DIR."
   cat >&2 <<'MSG'
 
-Fix one of the following and redeploy:
+You need to complete the one-time interactive login first:
 
-  1. Generate an OAuth token on a machine with browser access:
-         claude setup-token
-     then set CLAUDE_CODE_OAUTH_TOKEN in your Dokploy env.
-
-  2. Or set SETUP_MODE=true, redeploy, open a container terminal,
-     run `claude` and complete `/login` + `/status`, then set
-     SETUP_MODE=false and redeploy again.
+  1. Set SETUP_MODE=true and redeploy.
+  2. Open a terminal in the container and run:
+         claude
+         /login
+         /status
+  3. Copy the three fields from `jq '.oauthAccount' ~/.claude.json`
+     into Dokploy as CLAUDE_ACCOUNT_UUID / CLAUDE_EMAIL /
+     CLAUDE_ORGANIZATION_UUID.
+  4. Set SETUP_MODE=false and redeploy.
 
 MSG
   exit 1
 fi
 
-log "auth source: $auth_source"
+log "persisted credentials: found in $CONFIG_DIR"
 
 # ---------------------------------------------------------------------------
-# 5b. Materialise ~/.claude.json from onboarding env vars
+# 6. Materialise ~/.claude.json from onboarding env vars
 # ---------------------------------------------------------------------------
-# The OAuth token alone is not enough: claude-code also reads
-# /home/claude/.claude.json to confirm onboarding is complete and to know
-# which account / organization the token belongs to. That file lives at
-# $HOME, not inside the $HOME/.claude/ config volume, so it would be lost
-# on every container rebuild — we regenerate it deterministically from
-# env vars on every boot instead.
-ONBOARDING_JSON="$CLAUDE_HOME/.claude.json"
-
+# `/login` writes two files:
+#   - $CONFIG_DIR/.credentials.json  (persistent, on the config volume)
+#   - $CLAUDE_HOME/.claude.json      (NOT on a volume — ephemeral)
+#
+# Because the second one lives at $HOME instead of inside $HOME/.claude/,
+# a Dokploy redeploy wipes it and `claude remote-control server` comes
+# up without onboarding state. Regenerate it deterministically from env
+# vars on every boot.
 if [[ -n "${CLAUDE_ACCOUNT_UUID:-}" \
    && -n "${CLAUDE_EMAIL:-}" \
    && -n "${CLAUDE_ORGANIZATION_UUID:-}" ]]; then
@@ -156,29 +181,30 @@ if [[ -n "${CLAUDE_ACCOUNT_UUID:-}" \
     }' > "$ONBOARDING_JSON"
   chmod 600 "$ONBOARDING_JSON"
   log "wrote $ONBOARDING_JSON (onboarding v$onboarding_version)"
-elif [[ "$auth_source" == env-var* ]]; then
-  err "CLAUDE_CODE_OAUTH_TOKEN is set but onboarding env vars are missing."
+elif [[ -f "$ONBOARDING_JSON" ]]; then
+  log "onboarding env vars not set; using existing $ONBOARDING_JSON"
+else
+  err "no $ONBOARDING_JSON and onboarding env vars are missing."
   cat >&2 <<'MSG'
 
-The OAuth token path requires all of:
+After your first SETUP_MODE login, copy these three values from
+`jq '.oauthAccount' ~/.claude.json` into Dokploy:
 
-  CLAUDE_ACCOUNT_UUID       (your Claude account UUID)
-  CLAUDE_EMAIL              (the email on your Claude account)
-  CLAUDE_ORGANIZATION_UUID  (your Claude organization UUID)
+  CLAUDE_ACCOUNT_UUID
+  CLAUDE_EMAIL
+  CLAUDE_ORGANIZATION_UUID
 
-Optional:
-  CLAUDE_ONBOARDING_VERSION (defaults to 2.1.29)
+(Optional: CLAUDE_ONBOARDING_VERSION, defaults to 2.1.29)
 
-Set them in your Dokploy env and redeploy.
+These rebuild ~/.claude.json on every boot, so subsequent redeploys
+don't lose your onboarding state.
 
 MSG
   exit 1
-else
-  log "onboarding env vars not set; leaving $ONBOARDING_JSON untouched"
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Launch the Remote Control server
+# 7. Launch the Remote Control server
 # ---------------------------------------------------------------------------
 log "starting: claude remote-control server --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
 exec claude remote-control server \
