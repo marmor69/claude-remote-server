@@ -23,7 +23,9 @@
 #   3. Optionally start sshd when ENABLE_SSH=true.
 #   4. If SETUP_MODE=true, print login instructions and sleep forever.
 #   5. Verify persisted credentials exist on the home volume.
-#   6. Exec `claude remote-control`.
+#   6. Pre-accept the one-time Remote Control consent dialog so the server
+#      starts headless (no stdin available in a container).
+#   7. Exec `claude remote-control`.
 
 set -euo pipefail
 
@@ -136,7 +138,31 @@ fi
 log "persisted credentials: found in $CONFIG_DIR"
 
 # ---------------------------------------------------------------------------
-# 6. Launch the Remote Control server
+# 6. Skip the interactive "Enable Remote Control?" consent prompt
+# ---------------------------------------------------------------------------
+# `claude remote-control` shows a one-time y/n consent dialog the first time
+# it runs on a machine. In a headless container there's no one to answer it,
+# so the process blocks on stdin and the healthcheck eventually kills us.
+#
+# The prompt is gated on `remoteDialogSeen` in ~/.claude.json — once that key
+# is true, the prompt is skipped and the server launches directly. Pre-set
+# it here so the very first boot runs headless too. Idempotent: if the key
+# is already set (e.g. user already ran /login + /remote-control manually),
+# this is a no-op rewrite with the same value.
+CLAUDE_JSON="${CLAUDE_HOME}/.claude.json"
+if [[ -f "$CLAUDE_JSON" ]]; then
+  if ! jq -e '.remoteDialogSeen == true' "$CLAUDE_JSON" >/dev/null 2>&1; then
+    log "setting remoteDialogSeen=true in ~/.claude.json (skips consent prompt)"
+    tmp="$(mktemp)"
+    jq '. + {remoteDialogSeen: true}' "$CLAUDE_JSON" > "$tmp" && mv "$tmp" "$CLAUDE_JSON"
+  fi
+else
+  log "creating ~/.claude.json with remoteDialogSeen=true (skips consent prompt)"
+  printf '{"remoteDialogSeen": true}\n' > "$CLAUDE_JSON"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Launch the Remote Control server
 # ---------------------------------------------------------------------------
 # Build the argv from env vars. Defaults to worktree spawn mode because
 # that's the point of this project (spawn on-demand sessions per
