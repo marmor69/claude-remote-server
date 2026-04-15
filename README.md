@@ -2,8 +2,8 @@
 
 A small, Dokploy-friendly Docker setup for running
 [`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-as a headless `remote-control server` on a VPS, with persistent workspace
-and config volumes and optional SSH.
+as a headless `remote-control server` on a VPS, with the entire `$HOME`
+directory persisted across redeploys and optional SSH.
 
 ## How authentication works
 
@@ -13,22 +13,16 @@ through the interactive `/login` flow. Long-lived OAuth tokens
 for Remote Control — the entrypoint will actually unset the variable if it
 sees it, to keep it from confusing the real auth flow.
 
-`/login` writes two things:
+`/login` writes everything it needs into `$HOME`:
 
-- `/home/claude/.claude/.credentials.json` — the short-lived subscription
-  credentials. This lives inside the `claude-config-data` volume, so it
-  survives redeploys.
-- `/home/claude/.claude.json` — onboarding state and account identity.
-  This file lives at `$HOME`, **outside** the config volume, so a Dokploy
-  redeploy would otherwise wipe it.
+- `~/.claude/.credentials.json` — short-lived subscription credentials
+- `~/.claude.json` — onboarding state and account identity
+- `~/.claude/` — config, history, and project state
 
-To keep `.claude.json` across redeploys, the entrypoint regenerates it
-on every boot from four env vars:
-
-- `CLAUDE_ACCOUNT_UUID`
-- `CLAUDE_EMAIL`
-- `CLAUDE_ORGANIZATION_UUID`
-- `CLAUDE_ONBOARDING_VERSION` (optional, defaults to `2.1.29`)
+Because `$HOME` is mounted as a persistent named volume
+(`claude-home-data`), all of that survives redeploys automatically. No
+env-var copying, no symlink tricks — log in once, redeploy as often as
+you want.
 
 If `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` are present in the
 environment, the entrypoint unsets them before launching the server so
@@ -64,59 +58,29 @@ work without any manual steps.
    key. If it says API key, clear `ANTHROPIC_API_KEY` /
    `ANTHROPIC_AUTH_TOKEN` from your env and redeploy.
 
-4. **Copy the three identity values into Dokploy.** Still inside the
-   container:
-
-   ```bash
-   jq '.oauthAccount' ~/.claude.json
-   ```
-
-   You'll see something like:
-
-   ```json
-   {
-     "accountUuid": "00000000-0000-0000-0000-000000000000",
-     "emailAddress": "you@example.com",
-     "organizationUuid": "00000000-0000-0000-0000-000000000000"
-   }
-   ```
-
-   Paste those three values into Dokploy's env UI as:
-
-   - `CLAUDE_ACCOUNT_UUID`
-   - `CLAUDE_EMAIL`
-   - `CLAUDE_ORGANIZATION_UUID`
-
-5. **Flip setup mode off and redeploy.** Set:
+4. **Flip setup mode off and redeploy.** Set:
 
    ```env
    SETUP_MODE=false
    ```
 
    and redeploy. On boot the entrypoint verifies that
-   `.credentials.json` is in the config volume, regenerates
-   `~/.claude.json` from the three env vars, and execs
+   `~/.claude/.credentials.json` is present on the home volume and execs
    `claude remote-control server`. You should see this in the logs:
 
    ```text
    [entrypoint] persisted credentials: found in /home/claude/.claude
-   [entrypoint] wrote /home/claude/.claude.json (onboarding v2.1.29)
    [entrypoint] starting: claude remote-control server --spawn-worktree-sessions 5
    ```
 
-That's it. Subsequent redeploys reuse the persisted credentials and the
-env vars, so you don't have to log in again unless Claude Code forces a
-re-auth.
+That's it. Subsequent redeploys reuse the persisted login, so you don't
+have to repeat any of this unless Claude Code forces a re-auth.
 
 ## Environment variables
 
 | Variable                    | Default          | Purpose                                                              |
 |-----------------------------|------------------|----------------------------------------------------------------------|
 | `SETUP_MODE`                | `false`          | `true` = skip the server, wait for manual `/login`.                  |
-| `CLAUDE_ACCOUNT_UUID`       | *(empty)*        | Account UUID from `~/.claude.json` → `oauthAccount.accountUuid`.     |
-| `CLAUDE_EMAIL`              | *(empty)*        | Email from `~/.claude.json` → `oauthAccount.emailAddress`.           |
-| `CLAUDE_ORGANIZATION_UUID`  | *(empty)*        | Org UUID from `~/.claude.json` → `oauthAccount.organizationUuid`.    |
-| `CLAUDE_ONBOARDING_VERSION` | `2.1.29`         | Value written to `lastOnboardingVersion` in `~/.claude.json`.        |
 | `SPAWN_WORKTREE_SESSIONS`   | `5`              | Passed straight to `--spawn-worktree-sessions`.                      |
 | `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
 | `SSH_HOST_PORT`             | `2222`           | Host port mapped to container port 22.                               |
@@ -134,15 +98,16 @@ See `.env.example` for the same list in copy-pasteable form.
 
 Two named volumes, both must stay persistent in Dokploy:
 
-- `claude-workspace-data` → `/home/claude/workspace` (your project files)
-- `claude-config-data` → `/home/claude/.claude` (Claude login data, config)
+- `claude-home-data` → `/home/claude` (auth state, `~/.claude/`,
+  `~/.claude.json`, `~/.ssh/authorized_keys`, dotfiles — everything
+  Claude Code or the shell writes to `$HOME`)
+- `claude-workspace-data` → `/home/claude/workspace` (your project
+  files, nested inside `$HOME` but on its own volume so it can be
+  backed up or wiped independently of auth state)
 
-The entrypoint runs `chown -R claude:claude` on both on every boot so a
-freshly-mounted volume can never be root-owned in a way that silently
-breaks login persistence.
-
-Note that `~/.claude.json` is **not** on a volume — it's regenerated
-from env vars on every boot (see "How authentication works").
+The entrypoint runs `chown -R claude:claude /home/claude` on every boot
+so a freshly-mounted volume can never be root-owned in a way that
+silently breaks login persistence.
 
 ## SSH (optional)
 
@@ -152,9 +117,9 @@ decides at runtime.
 
 To enable it:
 
-1. Drop a public key into the `claude-config-data` volume's
-   `authorized_keys` (for example by using `SETUP_MODE=true` to get a
-   shell first), or bake one in via a volume mount.
+1. Drop a public key into `~/.ssh/authorized_keys` (the easiest way is
+   `SETUP_MODE=true`, exec in, and write the key — it'll persist on the
+   home volume).
 2. Set `ENABLE_SSH=true`.
 3. Redeploy. The entrypoint log will show `sshd started (port 22 inside
    container)`.
@@ -176,12 +141,6 @@ off, nothing is listening on the inside of the container.
 You haven't completed the first-time setup yet. Follow "First-time setup"
 from step 2.
 
-### `[entrypoint] ERROR: no /home/claude/.claude.json and onboarding env vars are missing`
-
-You completed `/login` but forgot to copy `CLAUDE_ACCOUNT_UUID`,
-`CLAUDE_EMAIL`, and `CLAUDE_ORGANIZATION_UUID` into Dokploy. Go back to
-step 4 of "First-time setup".
-
 ### `[entrypoint] WARNING: CLAUDE_CODE_OAUTH_TOKEN is set`
 
 You set a long-lived OAuth token, but `remote-control server` doesn't
@@ -191,15 +150,12 @@ flow instead.
 
 ### Login does not persist after redeploy
 
-- Make sure `claude-config-data` is a persistent named volume in Dokploy
+- Make sure `claude-home-data` is a persistent named volume in Dokploy
   and you aren't deleting it between deploys.
 - Log in as the `claude` user, not `root` — `whoami` inside the
   container should return `claude`.
 - Don't rename the volume; that creates a new empty volume and orphans
   your previous login.
-- Make sure all three onboarding env vars are still set — if any are
-  missing, `~/.claude.json` won't be regenerated and Claude Code will
-  behave as if onboarding was never completed.
 
 ### `/status` inside the container shows API-key auth
 
@@ -220,9 +176,8 @@ claude
 - The `claude` user has passwordless `sudo` inside the container so the
   entrypoint can repair volume ownership. If that matters for your
   threat model, audit before deploying.
-- The three onboarding env vars are non-secret identifiers (UUIDs and an
-  email). The actual credentials live inside the `claude-config-data`
-  volume — keep that volume private.
+- All credentials live inside the `claude-home-data` volume — keep that
+  volume private.
 
 ## Disclaimer
 

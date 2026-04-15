@@ -16,18 +16,17 @@ services:
       SETUP_MODE: ${SETUP_MODE:-false}
       ENABLE_SSH: ${ENABLE_SSH:-false}
       SPAWN_WORKTREE_SESSIONS: ${SPAWN_WORKTREE_SESSIONS:-5}
-      CLAUDE_ACCOUNT_UUID: ${CLAUDE_ACCOUNT_UUID:-}
-      CLAUDE_EMAIL: ${CLAUDE_EMAIL:-}
-      CLAUDE_ORGANIZATION_UUID: ${CLAUDE_ORGANIZATION_UUID:-}
-      CLAUDE_ONBOARDING_VERSION: ${CLAUDE_ONBOARDING_VERSION:-2.1.29}
     ports:
       # Published unconditionally so Dokploy users can toggle ENABLE_SSH
       # via the env UI without editing compose. Nothing listens inside the
       # container when ENABLE_SSH=false.
       - "${SSH_HOST_PORT:-2222}:22"
     volumes:
+      # Whole $HOME persists: ~/.claude/, ~/.claude.json, ~/.ssh, dotfiles.
+      - claude-home-data:/home/claude
+      # Project files nested inside $HOME but on their own volume so they
+      # can be backed up / wiped independently of auth state.
       - claude-workspace-data:/home/claude/workspace
-      - claude-config-data:/home/claude/.claude
     healthcheck:
       test:
         - CMD-SHELL
@@ -38,7 +37,7 @@ services:
       start_period: ${HEALTHCHECK_START_PERIOD:-30s}
 
 volumes:
+  claude-home-data:
+    name: claude-home-data
   claude-workspace-data:
     name: claude-workspace-data
-  claude-config-data:
-    name: claude-config-data
