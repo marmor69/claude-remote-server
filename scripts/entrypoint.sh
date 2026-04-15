@@ -4,7 +4,7 @@
 #
 # Remote Control requires subscription auth obtained via the interactive
 # `/login` flow. Long-lived OAuth tokens (CLAUDE_CODE_OAUTH_TOKEN) are
-# NOT supported by `claude remote-control server`, so the only auth path
+# NOT supported by `claude remote-control`, so the only auth path
 # is:
 #
 #   1. Deploy with SETUP_MODE=true.
@@ -23,7 +23,7 @@
 #   3. Optionally start sshd when ENABLE_SSH=true.
 #   4. If SETUP_MODE=true, print login instructions and sleep forever.
 #   5. Verify persisted credentials exist on the home volume.
-#   6. Exec `claude remote-control server`.
+#   6. Exec `claude remote-control`.
 
 set -euo pipefail
 
@@ -138,6 +138,6 @@ log "persisted credentials: found in $CONFIG_DIR"
 # ---------------------------------------------------------------------------
 # 6. Launch the Remote Control server
 # ---------------------------------------------------------------------------
-log "starting: claude remote-control server --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
-exec claude remote-control server \
+log "starting: claude remote-control --spawn-worktree-sessions ${SPAWN_WORKTREE_SESSIONS:-5}"
+exec claude remote-control \
   --spawn-worktree-sessions "${SPAWN_WORKTREE_SESSIONS:-5}"

@@ -2,12 +2,12 @@
 
 A small, Dokploy-friendly Docker setup for running
 [`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-as a headless `remote-control server` on a VPS, with the entire `$HOME`
+as a headless remote-control server on a VPS, with the entire `$HOME`
 directory persisted across redeploys and optional SSH.
 
 ## How authentication works
 
-`claude remote-control server` only accepts **subscription** auth obtained
+`claude remote-control` only accepts **subscription** auth obtained
 through the interactive `/login` flow. Long-lived OAuth tokens
 (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) are **not** supported
 for Remote Control — the entrypoint will actually unset the variable if it
@@ -66,11 +66,11 @@ work without any manual steps.
 
    and redeploy. On boot the entrypoint verifies that
    `~/.claude/.credentials.json` is present on the home volume and execs
-   `claude remote-control server`. You should see this in the logs:
+   `claude remote-control`. You should see this in the logs:
 
    ```text
    [entrypoint] persisted credentials: found in /home/claude/.claude
-   [entrypoint] starting: claude remote-control server --spawn-worktree-sessions 5
+   [entrypoint] starting: claude remote-control --spawn-worktree-sessions 5
    ```
 
 That's it. Subsequent redeploys reuse the persisted login, so you don't
@@ -143,7 +143,7 @@ from step 2.
 
 ### `[entrypoint] WARNING: CLAUDE_CODE_OAUTH_TOKEN is set`
 
-You set a long-lived OAuth token, but `remote-control server` doesn't
+You set a long-lived OAuth token, but `claude remote-control` doesn't
 accept them. The entrypoint unsets the variable automatically; remove it
 from your Dokploy env to silence the warning and use the `SETUP_MODE`
 flow instead.
