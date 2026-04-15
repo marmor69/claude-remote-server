@@ -2,93 +2,85 @@
 
 A small, Dokploy-friendly Docker setup for running
 [`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-as a headless `remote-control server` on a VPS, with persistent workspace
-and config volumes, a proper authentication pipeline, and optional SSH.
-
-## Quick start (Dokploy)
-
-1. Create a **Docker Compose** application in Dokploy and point it at this
-   repository.
-2. Generate an OAuth token on a machine that has a browser:
-
-   ```bash
-   claude setup-token
-   ```
-
-   Copy the resulting token into Dokploy's environment UI as
-   `CLAUDE_CODE_OAUTH_TOKEN` (treat it as a secret — do not commit it).
-3. On that same machine, open `~/.claude.json` and copy the three values
-   inside the `oauthAccount` object into Dokploy as
-   `CLAUDE_ACCOUNT_UUID`, `CLAUDE_EMAIL`, and `CLAUDE_ORGANIZATION_UUID`.
-   The entrypoint uses them to rebuild `~/.claude.json` inside the
-   container on every boot.
-4. Deploy. The entrypoint logs which auth source it picked; when the
-   process is healthy you're done.
-
-That's the whole happy path. Everything below is only needed if you want
-SSH, the interactive-login fallback, or a specific tweak.
+as a headless `remote-control server` on a VPS, with the entire `$HOME`
+directory persisted across redeploys and optional SSH.
 
 ## How authentication works
 
-Claude Code Remote Control requires **subscription** authentication, not
-an API key. The container supports two paths, in priority order:
+`claude remote-control server` only accepts **subscription** auth obtained
+through the interactive `/login` flow. Long-lived OAuth tokens
+(`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) are **not** supported
+for Remote Control — the entrypoint will actually unset the variable if it
+sees it, to keep it from confusing the real auth flow.
 
-1. **`CLAUDE_CODE_OAUTH_TOKEN` env var (recommended).** Generate once with
-   `claude setup-token` on any machine with a browser, then set the token
-   as an environment variable in Dokploy. No interactive step needed on
-   the VPS.
+`/login` writes everything it needs into `$HOME`:
 
-   The token alone is not enough, though: `claude-code` also reads
-   `~/.claude.json` for onboarding state and account identity. The
-   entrypoint rebuilds that file on every boot from these three
-   variables (all three required when `CLAUDE_CODE_OAUTH_TOKEN` is set):
+- `~/.claude/.credentials.json` — short-lived subscription credentials
+- `~/.claude.json` — onboarding state and account identity
+- `~/.claude/` — config, history, and project state
 
-   - `CLAUDE_ACCOUNT_UUID`
-   - `CLAUDE_EMAIL`
-   - `CLAUDE_ORGANIZATION_UUID`
-
-   Find the values on any machine where `claude` is already logged in,
-   inside `~/.claude.json` under the `oauthAccount` object:
-
-   ```bash
-   jq '.oauthAccount' ~/.claude.json
-   ```
-
-   Optionally override `CLAUDE_ONBOARDING_VERSION` (defaults to `2.1.29`)
-   if a future `claude-code` release requires a newer value.
-
-2. **Interactive `/login` (fallback).** For users who can't run
-   `claude setup-token` elsewhere. Set `SETUP_MODE=true`, deploy, open a
-   container terminal, run `claude` and complete `/login` + `/status`,
-   then flip `SETUP_MODE` back to `false` and redeploy. The login is
-   persisted on the `claude-config-data` volume.
-
-The entrypoint script (`scripts/entrypoint.sh`) resolves the auth source
-on every boot and prints one of these lines to the container logs:
-
-- `[entrypoint] auth source: env-var OAuth token (CLAUDE_CODE_OAUTH_TOKEN)`
-- `[entrypoint] auth source: persisted credentials in /home/claude/.claude`
-- `[entrypoint] ERROR: no Claude authentication available.` (followed by
-  instructions, then `exit 1`)
-
-If neither source is available the container fails fast with an
-actionable error, instead of silently crash-looping — that's the core
-fix for the old "authentication does not work properly" bug.
+Because `$HOME` is mounted as a persistent named volume
+(`claude-home-data`), all of that survives redeploys automatically. No
+env-var copying, no symlink tricks — log in once, redeploy as often as
+you want.
 
 If `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` are present in the
 environment, the entrypoint unsets them before launching the server so
 they can't override subscription auth.
 
+## First-time setup (Dokploy)
+
+You do this exactly once per deployment. After it's done, redeploys just
+work without any manual steps.
+
+1. **Create the Compose app.** Point Dokploy at this repository as a
+   Docker Compose application.
+
+2. **Deploy in setup mode.** Set:
+
+   ```env
+   SETUP_MODE=true
+   ```
+
+   and deploy. The container starts up, runs `sleep infinity`, and prints
+   instructions to the log.
+
+3. **Run `/login` from inside the container.** Open the Dokploy terminal
+   (or `docker exec -it <container> bash`) and run:
+
+   ```bash
+   claude
+   /login
+   /status
+   ```
+
+   `/status` must say **Claude subscription authentication** — not API
+   key. If it says API key, clear `ANTHROPIC_API_KEY` /
+   `ANTHROPIC_AUTH_TOKEN` from your env and redeploy.
+
+4. **Flip setup mode off and redeploy.** Set:
+
+   ```env
+   SETUP_MODE=false
+   ```
+
+   and redeploy. On boot the entrypoint verifies that
+   `~/.claude/.credentials.json` is present on the home volume and execs
+   `claude remote-control server`. You should see this in the logs:
+
+   ```text
+   [entrypoint] persisted credentials: found in /home/claude/.claude
+   [entrypoint] starting: claude remote-control server --spawn-worktree-sessions 5
+   ```
+
+That's it. Subsequent redeploys reuse the persisted login, so you don't
+have to repeat any of this unless Claude Code forces a re-auth.
+
 ## Environment variables
 
 | Variable                    | Default          | Purpose                                                              |
 |-----------------------------|------------------|----------------------------------------------------------------------|
-| `CLAUDE_CODE_OAUTH_TOKEN`   | *(empty)*        | Primary auth. Generate with `claude setup-token`.                    |
-| `CLAUDE_ACCOUNT_UUID`       | *(empty)*        | Account UUID from `~/.claude.json` → `oauthAccount.accountUuid`.     |
-| `CLAUDE_EMAIL`              | *(empty)*        | Email from `~/.claude.json` → `oauthAccount.emailAddress`.           |
-| `CLAUDE_ORGANIZATION_UUID`  | *(empty)*        | Org UUID from `~/.claude.json` → `oauthAccount.organizationUuid`.    |
-| `CLAUDE_ONBOARDING_VERSION` | `2.1.29`         | Value written to `lastOnboardingVersion` in `~/.claude.json`.        |
-| `SETUP_MODE`                | `false`          | `true` = don't start the server, wait for manual `/login`.           |
+| `SETUP_MODE`                | `false`          | `true` = skip the server, wait for manual `/login`.                  |
 | `SPAWN_WORKTREE_SESSIONS`   | `5`              | Passed straight to `--spawn-worktree-sessions`.                      |
 | `ENABLE_SSH`                | `false`          | Start sshd inside the container when `true`.                         |
 | `SSH_HOST_PORT`             | `2222`           | Host port mapped to container port 22.                               |
@@ -106,12 +98,16 @@ See `.env.example` for the same list in copy-pasteable form.
 
 Two named volumes, both must stay persistent in Dokploy:
 
-- `claude-workspace-data` → `/home/claude/workspace` (your project files)
-- `claude-config-data` → `/home/claude/.claude` (Claude login data, config)
+- `claude-home-data` → `/home/claude` (auth state, `~/.claude/`,
+  `~/.claude.json`, `~/.ssh/authorized_keys`, dotfiles — everything
+  Claude Code or the shell writes to `$HOME`)
+- `claude-workspace-data` → `/home/claude/workspace` (your project
+  files, nested inside `$HOME` but on its own volume so it can be
+  backed up or wiped independently of auth state)
 
-The entrypoint runs `chown -R claude:claude` on both on every boot so a
-freshly-mounted volume can never be root-owned in a way that silently
-breaks login persistence.
+The entrypoint runs `chown -R claude:claude /home/claude` on every boot
+so a freshly-mounted volume can never be root-owned in a way that
+silently breaks login persistence.
 
 ## SSH (optional)
 
@@ -121,9 +117,9 @@ decides at runtime.
 
 To enable it:
 
-1. Drop a public key into the `claude-config-data` volume's
-   `authorized_keys` (for example by using `SETUP_MODE=true` to get a
-   shell first), or bake one in via a volume mount.
+1. Drop a public key into `~/.ssh/authorized_keys` (the easiest way is
+   `SETUP_MODE=true`, exec in, and write the key — it'll persist on the
+   home volume).
 2. Set `ENABLE_SSH=true`.
 3. Redeploy. The entrypoint log will show `sshd started (port 22 inside
    container)`.
@@ -140,49 +136,48 @@ off, nothing is listening on the inside of the container.
 
 ## Troubleshooting
 
-### `[entrypoint] ERROR: no Claude authentication available.`
+### `[entrypoint] ERROR: no persisted Claude credentials found`
 
-Either set `CLAUDE_CODE_OAUTH_TOKEN` (recommended) or use the interactive
-fallback with `SETUP_MODE=true`. See "How authentication works" above.
+You haven't completed the first-time setup yet. Follow "First-time setup"
+from step 2.
 
-### `[entrypoint] ERROR: CLAUDE_CODE_OAUTH_TOKEN is set but onboarding env vars are missing.`
+### `[entrypoint] WARNING: CLAUDE_CODE_OAUTH_TOKEN is set`
 
-You set the token but forgot one of `CLAUDE_ACCOUNT_UUID`,
-`CLAUDE_EMAIL`, or `CLAUDE_ORGANIZATION_UUID`. Grab them from
-`~/.claude.json` on a machine where `claude` is already logged in (see
-"How authentication works") and set all three in Dokploy.
+You set a long-lived OAuth token, but `remote-control server` doesn't
+accept them. The entrypoint unsets the variable automatically; remove it
+from your Dokploy env to silence the warning and use the `SETUP_MODE`
+flow instead.
 
 ### Login does not persist after redeploy
 
-- Make sure `claude-config-data` is a persistent named volume in Dokploy
-  (don't delete it between deploys).
+- Make sure `claude-home-data` is a persistent named volume in Dokploy
+  and you aren't deleting it between deploys.
 - Log in as the `claude` user, not `root` — `whoami` inside the
   container should return `claude`.
 - Don't rename the volume; that creates a new empty volume and orphans
   your previous login.
 
-### API-key auth interferes with Remote Control
+### `/status` inside the container shows API-key auth
 
 The entrypoint already unsets `ANTHROPIC_API_KEY` and
-`ANTHROPIC_AUTH_TOKEN` on boot, but remove them from your Dokploy env
-anyway if you aren't using them — the less moving parts, the better.
-Remote Control requires subscription auth, and an API key in the same
-process will silently win.
+`ANTHROPIC_AUTH_TOKEN` on boot, but in interactive mode (`SETUP_MODE=true`)
+the `claude` you launch manually inherits whatever env you started your
+shell with. Explicitly `unset` them before running `claude` in the setup
+terminal:
 
-### Container is "running" but something feels off
-
-Check the logs for the `[entrypoint]` lines described in "How
-authentication works". They tell you exactly which auth source was used
-and whether sshd started.
+```bash
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+claude
+```
 
 ## Security notes
 
-- Treat `CLAUDE_CODE_OAUTH_TOKEN` as a secret. Store it in Dokploy's env
-  UI, never commit it.
 - Review the Dockerfile before deployment; only mount paths you trust.
 - The `claude` user has passwordless `sudo` inside the container so the
   entrypoint can repair volume ownership. If that matters for your
   threat model, audit before deploying.
+- All credentials live inside the `claude-home-data` volume — keep that
+  volume private.
 
 ## Disclaimer
 
